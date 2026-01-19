@@ -19,15 +19,54 @@ from telethon import TelegramClient
 from telethon.errors import *
 from telethon.tl.functions.messages import SetTypingRequest, GetMessagesViewsRequest
 from telethon.tl.types import SendMessageTypingAction, SendMessageRecordAudioAction
+from telethon import events 
 import config
 import python_socks
 import platform
+import sqlite3
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
 
 
 import json
 
 
-SETTINGS_FILE = Path("settings.json")
+
+ASSETS_DIR = Path("assets")
+ASSETS_DIR.mkdir(exist_ok=True) 
+
+SESSIONS_DIR = Path("sessions")
+SESSIONS_DIR.mkdir(exist_ok=True)
+
+SETTINGS_FILE = ASSETS_DIR / "settings.json"
+PROXY_FILE = ASSETS_DIR / "proxies.json"
+HISTORY_FILE = ASSETS_DIR / "history.json"
+DB_PATH = ASSETS_DIR / "phantom_vault.db"
+APP_ICON_PATH = ASSETS_DIR / "icon.png"
+
+DB_CONN = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+
+def init_vault():
+
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=OFF")
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            msg_id INTEGER, chat_id INTEGER, user_id INTEGER, 
+            text TEXT, timestamp DATETIME, is_deleted INTEGER DEFAULT 0,
+            session_owner TEXT, PRIMARY KEY (msg_id, chat_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_vault()
 CURRENT_LANG = "EN" 
 
 
@@ -37,6 +76,7 @@ TRANSLATIONS = {
         "tab_spam": "SPAM CONTROL",
         "tab_view": "VIEW BOOSTER",
         "tab_dash": "DASHBOARD",
+        "tab_scanner": "SCANNER / OSINT",
         "tab_logs": "LOGS TERMINAL",
         "btn_add": "$ ADD_SESSION",
         "btn_del": "$ DEL_SESSION",
@@ -46,8 +86,17 @@ TRANSLATIONS = {
         "btn_refresh": "$ REFRESH",
         "btn_launch": "$ LAUNCH_ATTACK",
         "btn_stop": "$ ABORT",
+        "btn_scanner_start": "$ DEEP_SCAN",
+        "btn_db_search": "$ SEARCH_VAULT",
         "lbl_active": "ACTIVE SESSIONS:",
         "lbl_target": "TARGET SPECIFICATION:",
+        "lbl_scanner_target": "TARGET CHAT:",
+        "lbl_scanner_keys": "KEYWORDS:",
+        "lbl_monitor_mode": "MONITORING MODE:",
+        "cb_all_sessions": "USE ALL SESSIONS",
+        "col_time": "TIME",
+        "col_user": "USER ID",
+        "col_text": "MESSAGE",
         "msg_restart": "Language changed to Russian!\nPlease restart the application."
     },
     "RU": {
@@ -55,6 +104,7 @@ TRANSLATIONS = {
         "tab_spam": "УПРАВЛЕНИЕ СПАМОМ",
         "tab_view": "НАКРУТКА ПРОСМОТРОВ",
         "tab_dash": "СТАТИСТИКА",
+        "tab_scanner": "СКАНЕР / OSINT",
         "tab_logs": "ЛОГИ / ТЕРМИНАЛ",
         "btn_add": "$ ДОБАВИТЬ",
         "btn_del": "$ УДАЛИТЬ",
@@ -64,8 +114,17 @@ TRANSLATIONS = {
         "btn_refresh": "$ ОБНОВИТЬ",
         "btn_launch": "$ НАЧАТЬ АТАКУ",
         "btn_stop": "$ ОСТАНОВИТЬ",
+        "btn_scanner_start": "$ НАЧАТЬ ПОИСК",
+        "btn_db_search": "$ ПОИСК В БАЗЕ",
         "lbl_active": "АКТИВНЫЕ СЕССИИ:",
         "lbl_target": "ЦЕЛЬ АТАКИ:",
+        "lbl_scanner_target": "ЧАТ ДЛЯ СКАНИРОВАНИЯ:",
+        "lbl_scanner_keys": "КЛЮЧЕВЫЕ СЛОВА:",
+        "lbl_monitor_mode": "РЕЖИМ СЛЕЖКИ:",
+        "cb_all_sessions": "ВСЕ СЕССИИ СРАЗУ",
+        "col_time": "ВРЕМЯ",
+        "col_user": "ID ЮЗЕРА",
+        "col_text": "ТЕКСТ",
         "msg_restart": "Язык изменен на Английский!\nПожалуйста, перезапустите программу."
     }
 }
@@ -93,25 +152,20 @@ def TR(key):
 
 load_settings()
 
-
-SESSIONS_DIR = Path("sessions")
-SESSIONS_DIR.mkdir(exist_ok=True)
-
 class CyberTheme:
     STYLES = """
     QMainWindow, QWidget {
         background-color: #0a0a0a;
         color: #00ff41;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 13px; /* Поднимаем размер, чтобы не было каши */
+        font-size: 13px; 
     }
     
     QLabel {
         padding: 2px 4px;
-        min-height: 18px; /* Не даем тексту сплющиваться в полоску */
+        min-height: 18px; 
     }
 
-    /* Исправляем заголовки, чтобы они были жирными и четкими */
     QLabel[header="true"] {
         font-size: 15px;
         font-weight: bold;
@@ -126,7 +180,6 @@ class CyberTheme:
         min-height: 28px;
     }
 
-    /* Кнопки — делаем их заметнее, чтобы текст внутри не плыл */
     QPushButton {
         border: 1px solid #00ff41;
         padding: 6px 12px;
@@ -152,12 +205,17 @@ class TerminalOutput(QTextEdit):
         self.setMaximumHeight(200)
         
     def add_line(self, text, color="#00ff41"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        html = f'<span style="color: #666666;">[{timestamp}]</span> <span style="color: {color};">{text}</span>'
-        self.append(html)
+        if self.document().blockCount() > 200:
+            cursor = self.textCursor()
+            cursor.movePosition(QTextCursor.Start)
+            cursor.select(QTextCursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
         
-        scrollbar = self.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        html = f'<span style="color: #666;">[{timestamp}]</span> <span style="color: {color};">{text}</span>'
+        self.append(html)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 
 class ProxyEditor(QDialog):
     def __init__(self, session_name, parent=None):
@@ -230,10 +288,10 @@ class ProxyEditor(QDialog):
 
     def load_current_proxy(self):
         import json
-        if not os.path.exists("proxies.json"): return
+        if not PROXY_FILE.exists(): return
         
         try:
-            with open("proxies.json", "r") as f:
+            with open(str(PROXY_FILE), "r") as f:
                 data = json.load(f)
                 proxy_str = data.get(self.session_name)
                 
@@ -280,9 +338,9 @@ class ProxyEditor(QDialog):
     def update_json(self, value):
         import json
         data = {}
-        if os.path.exists("proxies.json"):
+        if PROXY_FILE.exists():
             try:
-                with open("proxies.json", "r") as f:
+                with open(str(PROXY_FILE), "r") as f:
                     data = json.load(f)
             except: pass
         
@@ -292,7 +350,7 @@ class ProxyEditor(QDialog):
             if self.session_name in data:
                 del data[self.session_name]
         
-        with open("proxies.json", "w") as f:
+        with open(str(PROXY_FILE), "w") as f:
             json.dump(data, f, indent=4)
 
 class SessionManager(QWidget):
@@ -1560,7 +1618,7 @@ class HistoryPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
-        self.history_file = Path("history.json")
+        self.history_file = HISTORY_FILE
         self.setup_ui()
         self.load_history()
 
@@ -1618,7 +1676,6 @@ class HistoryPanel(QWidget):
         self.setLayout(layout)
 
     def add_record(self, action_type, target, details=""):
-        """Добавляет запись и сразу сохраняет в файл"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         
       
@@ -1674,6 +1731,70 @@ class HistoryPanel(QWidget):
             with open(self.history_file, 'w') as f:
                 json.dump([], f)
 
+class ScannerPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        grid = QGridLayout()
+        grid.addWidget(QLabel(TR("lbl_scanner_target")), 0, 0)
+        self.target_input = QLineEdit()
+        self.target_input.setPlaceholderText("@chat_link")
+        grid.addWidget(self.target_input, 0, 1)
+
+        self.all_sessions_cb = QCheckBox(TR("cb_all_sessions"))
+        self.all_sessions_cb.setChecked(True)
+        grid.addWidget(self.all_sessions_cb, 0, 2)
+
+        self.btn_start = QPushButton(TR("btn_scanner_start"))
+        self.btn_start.clicked.connect(self.start_global_monitoring)
+        grid.addWidget(self.btn_start, 1, 2)
+        
+        layout.addLayout(grid)
+
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Поиск по всей базе сообщений...")
+        self.btn_search = QPushButton(TR("btn_db_search"))
+        self.btn_search.clicked.connect(self.search_vault)
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.btn_search)
+        layout.addLayout(search_layout)
+
+        self.res_table = QTableWidget(0, 3)
+        self.res_table.setHorizontalHeaderLabels([TR("col_time"), TR("col_user"), TR("col_text")])
+        self.res_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.res_table)
+
+        self.setLayout(layout)
+
+    def start_global_monitoring(self):
+        target = self.target_input.text().strip()
+        if not target: return
+        asyncio.create_task(self.parent.deploy_monitors(target, self.all_sessions_cb.isChecked()))
+
+    def search_vault(self):
+        query = self.search_input.text().strip()
+        cursor = DB_CONN.cursor()
+        sql = "SELECT timestamp, user_id, text FROM messages"
+        if query:
+            sql += f" WHERE text LIKE '%{query}%'"
+        sql += " ORDER BY timestamp DESC LIMIT 100"
+        
+        df = pd.read_sql_query(sql, DB_CONN)
+        
+        self.res_table.setRowCount(0)
+        for _, row in df.iterrows():
+            r = self.res_table.rowCount()
+            self.res_table.insertRow(r)
+            self.res_table.setItem(r, 0, QTableWidgetItem(str(row['timestamp'])))
+            self.res_table.setItem(r, 1, QTableWidgetItem(str(row['user_id'])))
+            self.res_table.setItem(r, 2, QTableWidgetItem(str(row['text'])))
+
 class CyberMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1686,7 +1807,10 @@ class CyberMainWindow(QMainWindow):
         
         self.setStyleSheet(CyberTheme.STYLES)
         
-        self.setWindowIcon(QIcon.fromTheme("terminal"))
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+        else:
+            self.setWindowIcon(QIcon.fromTheme("terminal"))
         
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -1719,8 +1843,8 @@ class CyberMainWindow(QMainWindow):
         # header_label.setStyleSheet("""
         #     color: #00ff41; 
         #     font-family: monospace; 
-        #     font-size: 8px;      /* Подбери 7, 8 или 9 */
-        #     line-height: 8px;    /* Должно быть равно font-size для ASCII */
+        #     font-size: 8px;    
+        #     line-height: 8px;    
         #     letter-spacing: 0px;
         # """)
         # 
@@ -1774,7 +1898,10 @@ class CyberMainWindow(QMainWindow):
         
       
         self.history_panel = HistoryPanel(self)
-        self.tabs.addTab(self.history_panel, "HISTORY") # Или TR("tab_history") если добавил в перевод
+        self.tabs.addTab(self.history_panel, "HISTORY") 
+        
+        self.scanner_panel = ScannerPanel(self)
+        self.tabs.addTab(self.scanner_panel, TR("tab_scanner"))
         
         
         self.logs_panel = LogsPanel(self)
@@ -1800,7 +1927,6 @@ class CyberMainWindow(QMainWindow):
         
         footer_layout.addStretch()
         
-        # СТАЛО (Работает везде):
         self.user_label = QLabel(f"USER: {os.getlogin()} | HOST: {platform.node()}")
         self.user_label.setStyleSheet("color: #00ff41; font-family: 'Consolas';")
         footer_layout.addWidget(self.user_label)
@@ -1837,6 +1963,52 @@ class CyberMainWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self)
         dialog.exec_()
+        
+    async def attach_sniffer(self, client, session_name, target_chat=None):
+        @client.on(events.NewMessage(chats=target_chat if target_chat else None))
+        async def log_handler(event):
+            if event.is_group or event.is_channel:
+                cursor = DB_CONN.cursor()
+                try:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO messages 
+                        (msg_id, chat_id, user_id, text, timestamp, session_owner) 
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (event.id, event.chat_id, event.sender_id, event.text, event.date, session_name))
+                    DB_CONN.commit()
+                finally:
+                    pass
+        
+        @client.on(events.MessageDeleted())
+        async def delete_handler(event):
+            cursor = DB_CONN.cursor()
+            try:
+                for msg_id in event.deleted_ids:
+                    cursor.execute("UPDATE messages SET is_deleted = 1 WHERE msg_id = ?", (msg_id,))
+                DB_CONN.commit()
+            finally:
+                pass
+
+    async def deploy_monitors(self, target, all_sessions=True):
+        session_files = list(SESSIONS_DIR.glob("*.session"))
+        if not session_files: return
+        
+        targets = [session_files[0]] if not all_sessions else session_files
+        
+        if hasattr(self, 'logs_panel'):
+            self.logs_panel.add_log(f"Starting monitors on {target}...", "INFO")
+        
+        for s_file in targets:
+            try:
+                client = TelegramClient(str(s_file), config.API_ID, config.API_HASH)
+                await client.connect()
+                if await client.is_user_authorized():
+                    await self.attach_sniffer(client, s_file.stem, target)
+                    if hasattr(self, 'logs_panel'):
+                        self.logs_panel.add_log(f"Session {s_file.stem} is now monitoring.", "SUCCESS")
+            except Exception as e:
+                if hasattr(self, 'logs_panel'):
+                    self.logs_panel.add_log(f"Failed to start monitor on {s_file.stem}: {e}", "ERROR")
         
     async def test_all_sessions(self):
         session_files = []
@@ -2176,16 +2348,14 @@ class CyberMainWindow(QMainWindow):
             self.spam_control.stop_spam()
             
     def get_proxy_for_session(self, session_name):
-        """Читает proxies.json и возвращает конфиг для Telethon"""
         import json
         import python_socks
         
-        proxy_file = Path("proxies.json")
-        if not proxy_file.exists():
+        if not PROXY_FILE.exists():
             return None
             
         try:
-            with open(proxy_file, 'r') as f:
+            with open(str(PROXY_FILE), 'r') as f:
                 proxies = json.load(f)
                 
            
@@ -2230,6 +2400,8 @@ class CyberMainWindow(QMainWindow):
                 me = await client.get_me()
                 phone = f"+{me.phone}" if hasattr(me, 'phone') else session_file.name
                 premium = getattr(me, 'premium', False)
+                
+                await self.attach_sniffer(client, session_name, None)
                 
                 return {
                     'client': client,
@@ -2390,6 +2562,10 @@ class CyberMainWindow(QMainWindow):
 
 
 def main():
+    os.environ["QT_QPA_PLATFORM"] = "xcb" 
+    
+    os.environ["QT_NO_GLIB"] = "1"
+    
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     os.environ["QT_SCREEN_SCALE_FACTORS"] = "1"
     os.environ["QT_SCALE_FACTOR"] = "1.0"
