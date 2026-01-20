@@ -121,9 +121,9 @@ TRANSLATIONS = {
         "lbl_scanner_target": "ЧАТ ДЛЯ СКАНИРОВАНИЯ:",
         "lbl_scanner_keys": "КЛЮЧЕВЫЕ СЛОВА:",
         "lbl_monitor_mode": "РЕЖИМ СЛЕЖКИ:",
-        "cb_all_sessions": "ВСЕ СЕССИИ СРАЗУ",
+        "cb_all_sessions": "ВСЕ СЕССИИ",
         "col_time": "ВРЕМЯ",
-        "col_user": "ID ЮЗЕРА",
+        "col_user": "ID",
         "col_text": "ТЕКСТ",
         "msg_restart": "Язык изменен на Английский!\nПожалуйста, перезапустите программу."
     }
@@ -146,7 +146,6 @@ def save_settings(lang):
         json.dump({"language": lang}, f)
 
 def TR(key):
-    """Функция получения перевода"""
     return TRANSLATIONS.get(CURRENT_LANG, TRANSLATIONS["EN"]).get(key, key)
 
 
