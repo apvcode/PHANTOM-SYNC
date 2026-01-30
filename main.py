@@ -18,6 +18,8 @@ import qasync
 from telethon import TelegramClient
 from telethon.errors import *
 from telethon.tl.functions.messages import SetTypingRequest, GetMessagesViewsRequest
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.account import UpdateUsernameRequest
 from telethon.tl.types import SendMessageTypingAction, SendMessageRecordAudioAction
 from telethon import events 
 import config
@@ -121,9 +123,9 @@ TRANSLATIONS = {
         "lbl_scanner_target": "ЧАТ ДЛЯ СКАНИРОВАНИЯ:",
         "lbl_scanner_keys": "КЛЮЧЕВЫЕ СЛОВА:",
         "lbl_monitor_mode": "РЕЖИМ СЛЕЖКИ:",
-        "cb_all_sessions": "ВСЕ СЕССИИ",
+        "cb_all_sessions": "ВСЕ СЕССИИ СРАЗУ",
         "col_time": "ВРЕМЯ",
-        "col_user": "ID",
+        "col_user": "ID ЮЗЕРА",
         "col_text": "ТЕКСТ",
         "msg_restart": "Язык изменен на Английский!\nПожалуйста, перезапустите программу."
     }
@@ -146,6 +148,7 @@ def save_settings(lang):
         json.dump({"language": lang}, f)
 
 def TR(key):
+    """Функция получения перевода"""
     return TRANSLATIONS.get(CURRENT_LANG, TRANSLATIONS["EN"]).get(key, key)
 
 
@@ -380,43 +383,45 @@ class SessionManager(QWidget):
         
         self.btn_add = QPushButton(TR("btn_add"))
         self.btn_add.clicked.connect(self.add_session)
-        self.btn_add.setToolTip("Добавить новую сессию")
         btn_layout.addWidget(self.btn_add, 0, 0)
         
         self.btn_delete = QPushButton(TR("btn_del"))
         self.btn_delete.clicked.connect(self.delete_session)
-        self.btn_delete.setToolTip("Удалить выбранные сессии")
         btn_layout.addWidget(self.btn_delete, 0, 1)
         
         self.btn_test = QPushButton(TR("btn_test"))
         self.btn_test.clicked.connect(self.test_sessions)
-        self.btn_test.setToolTip("Протестировать все сессии")
         btn_layout.addWidget(self.btn_test, 0, 2)
         
         self.btn_spamblock = QPushButton(TR("btn_check"))
         self.btn_spamblock.clicked.connect(self.check_spamblock)
         self.btn_spamblock.setStyleSheet("color: #ff9900; border: 1px solid #ff9900;")
-        self.btn_spamblock.setToolTip("Проверить и разблокировать аккаунты")
         btn_layout.addWidget(self.btn_spamblock, 1, 0)
         
         self.btn_export = QPushButton(TR("btn_export"))
         self.btn_export.clicked.connect(self.export_sessions)
-        self.btn_export.setToolTip("Экспортировать сессии")
         btn_layout.addWidget(self.btn_export, 1, 1)
         
         self.btn_refresh = QPushButton(TR("btn_refresh"))
         self.btn_refresh.clicked.connect(self.load_sessions)
-        self.btn_refresh.setToolTip("Обновить список")
         btn_layout.addWidget(self.btn_refresh, 1, 2)
+
+        self.btn_set_random = QPushButton("$ SET_RANDOM_USERS")
+        self.btn_set_random.clicked.connect(self.set_random_usernames)
+        self.btn_set_random.setStyleSheet("color: #00ffff; border: 1px solid #00ffff;")
+        btn_layout.addWidget(self.btn_set_random, 2, 0)
+        
+        self.btn_check_users = QPushButton("$ CHECK_USERNAMES")
+        self.btn_check_users.clicked.connect(self.check_usernames)
+        self.btn_check_users.setStyleSheet("color: #0099ff; border: 1px solid #0099ff;")
+        btn_layout.addWidget(self.btn_check_users, 2, 1, 1, 2)
         
         btn_frame.setLayout(btn_layout)
         layout.addWidget(btn_frame)
         
         list_frame = QFrame()
         list_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
-        list_frame.setLineWidth(1)
         list_frame.setStyleSheet("border: 1px solid #333333;")
-        
         list_layout = QVBoxLayout()
         
         header = QLabel(TR("lbl_active"))
@@ -425,34 +430,23 @@ class SessionManager(QWidget):
         
         self.session_list = QListWidget()
         self.session_list.setSelectionMode(QListWidget.ExtendedSelection)
-        
-      
         self.session_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.session_list.customContextMenuRequested.connect(self.show_context_menu)
-        
-        
         list_layout.addWidget(self.session_list)
         
         list_frame.setLayout(list_layout)
         layout.addWidget(list_frame)
         
         status_frame = QFrame()
-        status_frame.setFrameStyle(QFrame.Box | QFrame.Sunken)
-        status_frame.setLineWidth(1)
         status_frame.setStyleSheet("border: 1px solid #333333; padding: 5px; background-color: #111111;")
-        
         status_layout = QHBoxLayout()
-        
         self.status_label = QLabel("SESSIONS: 0 | ONLINE: 0 | OFFLINE: 0")
         self.status_label.setStyleSheet("color: #00ff41; font-family: 'Consolas';")
         status_layout.addWidget(self.status_label)
-        
         status_layout.addStretch()
-        
         self.connection_indicator = QLabel("●")
         self.connection_indicator.setStyleSheet("color: #ff0033; font-size: 16px;")
         status_layout.addWidget(self.connection_indicator)
-        
         status_frame.setLayout(status_layout)
         layout.addWidget(status_frame)
         
@@ -461,22 +455,11 @@ class SessionManager(QWidget):
         
     def load_sessions(self):
         self.session_list.clear()
-        
         session_files = []
-        
         for file in SESSIONS_DIR.glob("*.session"):
-            if 'journal' in file.name or '-wal' in file.name or '-shm' in file.name:
-                continue
-                
+            if 'journal' in file.name or '-wal' in file.name: continue
             if file.is_file():
-                base_name = file.stem
-                session_files.append({
-                    'path': str(file),
-                    'base_name': base_name,
-                    'size': file.stat().st_size
-                })
-        
-        online_count = 0
+                session_files.append({'path': str(file), 'base_name': file.stem})
         
         for session_data in session_files:
             session_file = Path(session_data['path'])
@@ -486,185 +469,186 @@ class SessionManager(QWidget):
             numbers = re.findall(r'\d+', base_name)
             phone = f"+{numbers[-1]}" if numbers and len(numbers[-1]) >= 7 else base_name
             
-            status_color = "#00ff41"
-            online_count += 1
-            
-          
-            item = QListWidgetItem(phone) 
-            
-    
-            item.setForeground(QColor(status_color))
-            
-           
+            item = QListWidgetItem(phone)
+            item.setForeground(QColor("#00ff41"))
             item.setData(Qt.UserRole, str(session_file))
-            item.setToolTip(f"File: {base_name}\nSize: {session_data['size']} bytes")
-            
+            item.setData(Qt.UserRole + 1, phone) 
             self.session_list.addItem(item)
-        
-        self.status_label.setText(f"SESSIONS: {len(session_files)} | ONLINE: {online_count}")
-        
-        if online_count > 0:
-            self.connection_indicator.setStyleSheet("color: #00ff41; font-size: 16px;")
-        else:
-            self.connection_indicator.setStyleSheet("color: #ff0033; font-size: 16px;")
             
-    def add_session(self):
-        if hasattr(self.parent, 'logs_panel'):
-            self.parent.logs_panel.add_log("Opening add session dialog...", "INFO")
-            
-        dialog = CyberAddSessionDialog(self.parent)
-        if dialog.exec_() == QDialog.Accepted:
-            self.load_sessions()
-            if hasattr(self.parent, 'logs_panel'):
-                self.parent.logs_panel.add_log("Session added successfully", "SUCCESS")
-            
-    def delete_session(self):
+        self.status_label.setText(f"SESSIONS: {len(session_files)}")
+        self.connection_indicator.setStyleSheet("color: #00ff41; font-size: 16px;" if len(session_files) > 0 else "color: #ff0033;")
+
+    def check_usernames(self):
         items = self.session_list.selectedItems()
         if not items:
-            QMessageBox.warning(self, "WARNING", "NO SESSIONS SELECTED!")
-            if hasattr(self.parent, 'logs_panel'):
-                self.parent.logs_panel.add_log("Delete session failed: no sessions selected", "ERROR")
-            return
-            
-        if hasattr(self.parent, 'logs_panel'):
-            self.parent.logs_panel.add_log(f"Attempting to delete {len(items)} session(s)...", "WARNING")
-            
-        msg_box = QMessageBox()
-        msg_box.setWindowTitle("CONFIRM DELETE")
-        msg_box.setText(f"DELETE {len(items)} SESSION(S)?")
-        msg_box.setInformativeText("This action cannot be undone!")
-        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        msg_box.setDefaultButton(QMessageBox.No)
-        
-        msg_box.setStyleSheet("""
-            QMessageBox {
-                background-color: #111111;
-                color: #00ff41;
-            }
-            QPushButton {
-                border: 1px solid #333333;
-                padding: 5px;
-                min-width: 70px;
-            }
-        """)
-        
-        if msg_box.exec_() == QMessageBox.Yes:
-            deleted_count = 0
-            for item in items:
-                session_file = item.data(Qt.UserRole)
-                try:
-                    os.remove(session_file)
-                    for ext in ['.session', '.session-journal']:
-                        if os.path.exists(session_file + ext):
-                            os.remove(session_file + ext)
-                    deleted_count += 1
-                except Exception as e:
-                    if hasattr(self.parent, 'logs_panel'):
-                        self.parent.logs_panel.add_log(f"Failed to delete {session_file}: {str(e)[:30]}", "ERROR")
-            self.load_sessions()
-            
-            if hasattr(self.parent, 'logs_panel'):
-                self.parent.logs_panel.add_log(f"Successfully deleted {deleted_count} session(s)", "SUCCESS")
-            
-    def test_sessions(self):
-        if hasattr(self.parent, 'logs_panel'):
-            self.parent.logs_panel.add_log("Starting session testing...", "INFO")
-        asyncio.create_task(self.parent.test_all_sessions())
-        
-    def import_sessions(self):
-        if hasattr(self.parent, 'logs_panel'):
-            self.parent.logs_panel.add_log("Import sessions requested - feature not implemented", "WARNING")
-        QMessageBox.information(self, "INFO", "IMPORT FUNCTION - COMING SOON")
-        
-    def export_sessions(self):
-        items = self.session_list.selectedItems()
-        
-        if not items:
-            reply = QMessageBox.question(
-                self, "CONFIRM EXPORT", 
-                "No sessions selected. Export ALL active sessions?",
-                QMessageBox.Yes | QMessageBox.No
-            )
+            reply = QMessageBox.question(self, "CHECK ALL?", "No selection. Check usernames for ALL sessions?", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
                 items = [self.session_list.item(i) for i in range(self.session_list.count())]
             else:
                 return
 
+        if hasattr(self.parent, 'logs_panel'):
+            self.parent.logs_panel.add_log(f"Checking usernames for {len(items)} sessions...", "INFO")
+            
+        asyncio.create_task(self.process_check_usernames(items))
+
+    async def process_check_usernames(self, items):
+        for item in items:
+            session_path = item.data(Qt.UserRole)
+            original_phone = item.data(Qt.UserRole + 1)
+            
+            try:
+
+                proxy = None
+                if hasattr(self.parent, 'get_proxy_for_session'):
+                    proxy = self.parent.get_proxy_for_session(Path(session_path).stem)
+
+                client = TelegramClient(session_path, config.API_ID, config.API_HASH, proxy=proxy)
+                await client.connect()
+                
+                if await client.is_user_authorized():
+                    me = await client.get_me()
+                    
+                    if me.username:
+                        display_text = f"{original_phone} | @{me.username}"
+                        item.setForeground(QColor("#00ff41")) 
+                        if hasattr(self.parent, 'logs_panel'):
+                            self.parent.logs_panel.add_log(f"Found user: {original_phone} -> @{me.username}", "SUCCESS")
+                    else:
+                        display_text = f"{original_phone} | <NO USERNAME>"
+                        item.setForeground(QColor("#ffff00")) 
+                    
+                    item.setText(display_text)
+                else:
+                    item.setText(f"{original_phone} | <DEAD>")
+                    item.setForeground(QColor("#ff0033")) 
+                
+                await client.disconnect()
+                await asyncio.sleep(0.5) 
+                
+            except Exception as e:
+                item.setText(f"{original_phone} | <ERROR>")
+                item.setForeground(QColor("#ff0033"))
+                if hasattr(self.parent, 'logs_panel'):
+                    self.parent.logs_panel.add_log(f"Check error {original_phone}: {e}", "ERROR")
+
+        QMessageBox.information(self, "DONE", "Username check complete.")
+
+    def set_random_usernames(self):
+        items = self.session_list.selectedItems()
         if not items:
-            return
+            reply = QMessageBox.question(self, "ALL SESSIONS?", "No selection. Set random usernames for ALL sessions?", QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                items = [self.session_list.item(i) for i in range(self.session_list.count())]
+            else:
+                return
+
+        if hasattr(self.parent, 'logs_panel'):
+            self.parent.logs_panel.add_log(f"Setting random usernames for {len(items)} sessions...", "WARNING")
+            
+        asyncio.create_task(self.process_random_usernames(items))
+
+    async def process_random_usernames(self, items):
+        import string
+        from telethon.tl.functions.account import UpdateUsernameRequest
+
+        for item in items:
+            session_path = item.data(Qt.UserRole)
+            original_phone = item.data(Qt.UserRole + 1)
+            
+            length = random.randint(10, 14)
+            new_username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
+            new_username = random.choice(string.ascii_lowercase) + new_username
+            
+            try:
+                
+                proxy = None
+                if hasattr(self.parent, 'get_proxy_for_session'):
+                    proxy = self.parent.get_proxy_for_session(Path(session_path).stem)
+
+                client = TelegramClient(session_path, config.API_ID, config.API_HASH, proxy=proxy)
+                await client.connect()
+                
+                if await client.is_user_authorized():
+                    try:
+                        await client(UpdateUsernameRequest(username=new_username))
+                        item.setText(f"{original_phone} | @{new_username}")
+                        if hasattr(self.parent, 'logs_panel'):
+                            self.parent.logs_panel.add_log(f"Session {original_phone} -> @{new_username}", "SUCCESS")
+                    except Exception as e:
+                         if hasattr(self.parent, 'logs_panel'):
+                            self.parent.logs_panel.add_log(f"Failed to set user for {original_phone}: {e}", "ERROR")
+                
+                await client.disconnect()
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                print(e)
+                
+        QMessageBox.information(self, "DONE", "Username update process finished.")
+
+    def add_session(self):
+        if hasattr(self.parent, 'logs_panel'): self.parent.logs_panel.add_log("Opening add session dialog...", "INFO")
+        dialog = CyberAddSessionDialog(self.parent)
+        if dialog.exec_() == QDialog.Accepted: self.load_sessions()
+            
+    def delete_session(self):
+        items = self.session_list.selectedItems()
+        if not items: return
+        for item in items:
+            try:
+                os.remove(item.data(Qt.UserRole))
+
+                journal = item.data(Qt.UserRole) + "-journal"
+                if os.path.exists(journal): os.remove(journal)
+            except: pass
+        self.load_sessions()
+
+    def test_sessions(self):
+        asyncio.create_task(self.parent.test_all_sessions())
+
+    def export_sessions(self):
+        items = self.session_list.selectedItems()
+        if not items:
+            items = [self.session_list.item(i) for i in range(self.session_list.count())]
+
+        if not items: return
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         default_name = f"phantom_sessions_{timestamp}.zip"
         
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "SAVE EXPORT ARCHIVE", 
-            default_name, 
-            "ZIP Archive (*.zip)"
-        )
-
-        if not file_path:
-            return
-
-        if hasattr(self.parent, 'logs_panel'):
-            self.parent.logs_panel.add_log(f"Exporting {len(items)} sessions...", "INFO")
+        file_path, _ = QFileDialog.getSaveFileName(self, "SAVE EXPORT ARCHIVE", default_name, "ZIP Archive (*.zip)")
+        if not file_path: return
 
         try:
-            exported_count = 0
             with zipfile.ZipFile(file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for item in items:
                     session_path = Path(item.data(Qt.UserRole))
-                    
                     if session_path.exists():
                         zipf.write(session_path, arcname=session_path.name)
-                        exported_count += 1
             
-            msg = f"Successfully exported {exported_count} sessions to:\n{Path(file_path).name}"
-            QMessageBox.information(self, "EXPORT COMPLETE", msg)
-            
-            if hasattr(self.parent, 'logs_panel'):
-                self.parent.logs_panel.add_log(f"Export success: {file_path}", "SUCCESS")
-
+            QMessageBox.information(self, "EXPORT COMPLETE", f"Exported {len(items)} sessions.")
         except Exception as e:
-            err_msg = f"Export failed: {str(e)}"
-            QMessageBox.critical(self, "ERROR", err_msg)
-            if hasattr(self.parent, 'logs_panel'):
-                self.parent.logs_panel.add_log(err_msg, "ERROR")
+            QMessageBox.critical(self, "ERROR", str(e))
         
     def check_spamblock(self):
-        if hasattr(self.parent, 'logs_panel'):
-            self.parent.logs_panel.add_log("Starting SpamBlock check & Auto-Fix...", "WARNING")
         asyncio.create_task(self.parent.run_spamblock_checker())
 
- 
     def show_context_menu(self, pos):
         item = self.session_list.itemAt(pos)
-        if not item:
-            return
-            
+        if not item: return
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background-color: #000; color: #00ff41; border: 1px solid #333; }
-            QMenu::item:selected { background-color: #111; }
-        """)
+        menu.setStyleSheet("QMenu { background-color: #000; color: #00ff41; border: 1px solid #333; }")
         
-      
         proxy_action = QAction("⚙️ PROXY SETTINGS", self)
         proxy_action.triggered.connect(lambda: self.open_proxy_settings(item))
         menu.addAction(proxy_action)
-        
-       
-        del_action = QAction("❌ DELETE SESSION", self)
-        del_action.triggered.connect(self.delete_session)
-        menu.addAction(del_action)
         
         menu.exec_(self.session_list.mapToGlobal(pos))
 
     def open_proxy_settings(self, item):
         session_file = Path(item.data(Qt.UserRole))
-        session_name = session_file.stem 
-        
-        dialog = ProxyEditor(session_name, self)
+        dialog = ProxyEditor(session_file.stem, self)
         dialog.exec_()
 
 class CyberAddSessionDialog(QDialog):
@@ -1239,7 +1223,6 @@ class LogsPanel(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(5, 5, 5, 5)
         
-       
         ascii_header = QLabel("""
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              SYSTEM LOG TERMINAL                             │
@@ -1250,7 +1233,6 @@ class LogsPanel(QWidget):
         ascii_header.setStyleSheet("color: #00ff41; font-family: 'Consolas'; font-size: 10px; line-height: 10px;")
         layout.addWidget(ascii_header)
         
-      
         control_frame = QFrame()
         control_frame.setFrameStyle(QFrame.Box | QFrame.Raised)
         control_frame.setLineWidth(1)
@@ -1258,7 +1240,6 @@ class LogsPanel(QWidget):
         
         control_layout = QHBoxLayout()
         
-       
         filters_label = QLabel("FILTERS:")
         filters_label.setStyleSheet("color: #00ff9d; font-weight: bold;")
         control_layout.addWidget(filters_label)
@@ -1285,7 +1266,6 @@ class LogsPanel(QWidget):
         
         control_layout.addStretch()
         
-     
         self.btn_clear = QPushButton("$ CLEAR_LOGS")
         self.btn_clear.clicked.connect(self.clear_logs)
         control_layout.addWidget(self.btn_clear)
@@ -1302,7 +1282,6 @@ class LogsPanel(QWidget):
         control_frame.setLayout(control_layout)
         layout.addWidget(control_frame)
         
-        
         self.log_terminal = QTextEdit()
         self.log_terminal.setReadOnly(True)
         self.log_terminal.setStyleSheet("""
@@ -1318,87 +1297,101 @@ class LogsPanel(QWidget):
         """)
         layout.addWidget(self.log_terminal, 100)
         
-     
         status_frame = QFrame()
         status_frame.setFrameStyle(QFrame.Box | QFrame.Sunken)
         status_frame.setLineWidth(1)
         status_frame.setStyleSheet("border: 1px solid #333333; padding: 5px; background-color: #111111;")
         
         status_layout = QHBoxLayout()
-        
         self.log_count_label = QLabel("LOGS: 0")
         self.log_count_label.setStyleSheet("color: #00ff41;")
         status_layout.addWidget(self.log_count_label)
-        
         status_layout.addStretch()
-        
         self.autoscroll_label = QLabel("AUTOSCROLL: ON")
         self.autoscroll_label.setStyleSheet("color: #00ff9d;")
         status_layout.addWidget(self.autoscroll_label)
-        
         status_frame.setLayout(status_layout)
         layout.addWidget(status_frame)
+
+        input_frame = QFrame()
+        input_frame.setStyleSheet("background-color: #000; border-top: 1px solid #333;")
+        input_layout = QHBoxLayout()
+        input_layout.setContentsMargins(5, 5, 5, 5)
+
+        lbl_prompt = QLabel(">")
+        lbl_prompt.setStyleSheet("color: #00ff41; font-weight: bold; font-size: 14px;")
+        input_layout.addWidget(lbl_prompt)
+
+        self.cmd_input = QLineEdit()
+        self.cmd_input.setPlaceholderText("Enter target username to launch attack (e.g. @username)...")
+        self.cmd_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #000;
+                color: #00ff41;
+                border: none;
+                font-family: 'Consolas';
+                font-size: 12px;
+            }
+        """)
+        self.cmd_input.returnPressed.connect(self.execute_command)
+        input_layout.addWidget(self.cmd_input)
+        
+        input_frame.setLayout(input_layout)
+        layout.addWidget(input_frame)
         
         self.setLayout(layout)
+
+    def execute_command(self):
+        target = self.cmd_input.text().strip()
+        if not target: return
         
-    def add_log(self, message, log_type="INFO"):
-        if self.is_paused:
-            return
+        self.add_log(f"COMMAND EXECUTED: Launching attack on {target}", "SYSTEM")
+        self.cmd_input.clear()
+        
+        if hasattr(self.parent, 'spam_control'):
+            ctrl = self.parent.spam_control
             
+            ctrl.target_input.setText(target)
+            
+            if self.parent.is_spamming:
+                ctrl.stop_spam()
+
+            else:
+                self.trigger_spam_start(ctrl)
+
+    def trigger_spam_start(self, ctrl):
+
+        ctrl.toggle_spam()
+
+    def add_log(self, message, log_type="INFO"):
+        if self.is_paused: return
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_entry = {
-            'timestamp': timestamp,
-            'message': message,
-            'type': log_type,
-            'color': self.get_color_for_type(log_type)
-        }
-        
+        log_entry = {'timestamp': timestamp, 'message': message, 'type': log_type, 'color': self.get_color_for_type(log_type)}
         self.all_logs.append(log_entry)
-        
         if self.should_show_log(log_type):
             self.filtered_logs.append(log_entry)
             self.append_to_terminal(log_entry)
-            
         self.update_status()
         
     def get_color_for_type(self, log_type):
-        colors = {
-            'INFO': '#0099ff',
-            'SUCCESS': '#00ff41',
-            'WARNING': '#ff9900',
-            'ERROR': '#ff0033',
-            'SYSTEM': '#ff00ff'
-        }
-        return colors.get(log_type, '#00ff41')
+        return {'INFO': '#0099ff', 'SUCCESS': '#00ff41', 'WARNING': '#ff9900', 'ERROR': '#ff0033', 'SYSTEM': '#ff00ff'}.get(log_type, '#00ff41')
         
     def should_show_log(self, log_type):
-        if log_type == 'INFO' and not self.show_info_cb.isChecked():
-            return False
-        if log_type == 'SUCCESS' and not self.show_success_cb.isChecked():
-            return False
-        if log_type == 'WARNING' and not self.show_warning_cb.isChecked():
-            return False
-        if log_type == 'ERROR' and not self.show_error_cb.isChecked():
-            return False
+        if log_type == 'INFO' and not self.show_info_cb.isChecked(): return False
+        if log_type == 'SUCCESS' and not self.show_success_cb.isChecked(): return False
+        if log_type == 'WARNING' and not self.show_warning_cb.isChecked(): return False
+        if log_type == 'ERROR' and not self.show_error_cb.isChecked(): return False
         return True
         
     def append_to_terminal(self, log_entry):
-        html = f'<span style="color: #666666;">[{log_entry["timestamp"]}]</span> '
-        html += f'<span style="color: {log_entry["color"]};">{log_entry["message"]}</span>'
-        
-        cursor = self.log_terminal.textCursor()
-        cursor.movePosition(cursor.End)
-        cursor.insertHtml(html + '<br>')
-        
-        
-        if self.autoscroll_label.text() == "AUTOSCROLL: ON":
-            scrollbar = self.log_terminal.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+        html = f'<span style="color: #666;">[{log_entry["timestamp"]}]</span> <span style="color: {log_entry["color"]};">{log_entry["message"]}</span>'
+        self.log_terminal.append(html)
+        if "AUTOSCROLL: ON" in self.autoscroll_label.text():
+            self.log_terminal.verticalScrollBar().setValue(self.log_terminal.verticalScrollBar().maximum())
             
     def filter_logs(self):
-        self.filtered_logs = []
         self.log_terminal.clear()
-        
+        self.filtered_logs = []
         for log in self.all_logs:
             if self.should_show_log(log['type']):
                 self.filtered_logs.append(log)
@@ -1411,26 +1404,18 @@ class LogsPanel(QWidget):
         self.update_status()
         
     def export_logs(self):
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Export Logs", 
-            f"phantom_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            "Text Files (*.txt);;All Files (*)"
-        )
-        
+        filename, _ = QFileDialog.getSaveFileName(self, "Export Logs", f"logs_{datetime.now().strftime('%Y%m%d')}.txt")
         if filename:
-            with open(filename, 'w', encoding='utf-8') as f:
-                for log in self.all_logs:
-                    f.write(f"[{log['timestamp']}] {log['message']}\n")
-                    
+            with open(filename, 'w') as f:
+                for log in self.all_logs: f.write(f"[{log['timestamp']}] {log['message']}\n")
+            
     def toggle_pause(self):
         self.is_paused = not self.is_paused
-        if self.is_paused:
-            self.btn_pause.setText("$ RESUME")
-        else:
-            self.btn_pause.setText("$ PAUSE")
+        self.btn_pause.setText("$ RESUME" if self.is_paused else "$ PAUSE")
             
     def update_status(self):
         self.log_count_label.setText(f"LOGS: {len(self.all_logs)}")
+
 
 class ViewBooster(QWidget):
     def __init__(self, parent=None):
@@ -1567,6 +1552,126 @@ class ViewBooster(QWidget):
             await asyncio.sleep(random.uniform(1, 3))
 
         self.log(f"🏁 DONE! Total views added: {success}", "#ffffff")
+        self.stop_boost()
+
+class SubscriberBooster(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.is_running = False
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        header = QLabel("📈 SUBS BOOSTER (НАКРУТКА ПОДПИСЧИКОВ)")
+        header.setStyleSheet("color: #00ff9d; font-weight: bold; font-size: 14px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+
+        input_frame = QFrame()
+        input_frame.setStyleSheet("border: 1px solid #333; padding: 10px; background: #0a0a0a;")
+        input_layout = QVBoxLayout()
+        
+        self.link_input = QLineEdit()
+        self.link_input.setPlaceholderText("https://t.me/channel_username или @channel_username")
+        self.link_input.setStyleSheet("color: #00ff41; padding: 8px; border: 1px solid #00ff41;")
+        input_layout.addWidget(QLabel("CHANNEL LINK / USERNAME:"))
+        input_layout.addWidget(self.link_input)
+        
+        input_frame.setLayout(input_layout)
+        layout.addWidget(input_frame)
+
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setStyleSheet("background: #000; color: #00ff9d; font-family: monospace; font-size: 10px;")
+        layout.addWidget(self.log_area)
+
+        btn_layout = QHBoxLayout()
+        self.btn_start = QPushButton("$ START_SUBS_BOOST")
+        self.btn_start.clicked.connect(self.start_boost)
+        self.btn_start.setStyleSheet("color: #00ff41; border: 1px solid #00ff41; padding: 10px; font-weight: bold;")
+        
+        self.btn_stop = QPushButton("$ STOP")
+        self.btn_stop.clicked.connect(self.stop_boost)
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setStyleSheet("color: #ff0033; border: 1px solid #ff0033; padding: 10px;")
+
+        btn_layout.addWidget(self.btn_start)
+        btn_layout.addWidget(self.btn_stop)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+
+    def log(self, text, color="#00ff41"):
+        time_str = datetime.now().strftime("%H:%M:%S")
+        self.log_area.append(f'<span style="color: #666;">[{time_str}]</span> <span style="color: {color};">{text}</span>')
+        scrollbar = self.log_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def start_boost(self):
+        link = self.link_input.text().strip()
+        if not link:
+            self.log("ERROR: Empty Link", "#ff0033")
+            return
+
+        self.is_running = True
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.log(f"🚀 STARTING SUBS BOOST FOR: {link}", "#0099ff")
+        
+        if hasattr(self.parent, 'history_panel'):
+            self.parent.history_panel.add_record("SUBS BOOST", link, "In Progress")
+       
+        asyncio.create_task(self.run_boost_task(link))
+
+    def stop_boost(self):
+        self.is_running = False
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.log("🛑 STOPPED BY USER", "#ff9900")
+
+    async def run_boost_task(self, channel_link):
+        session_files = list(SESSIONS_DIR.glob("*.session"))
+        success = 0
+        
+        for session in session_files:
+            if not self.is_running: break
+            if 'journal' in session.name: continue
+            
+            proxy_config = self.parent.get_proxy_for_session(session.stem) if hasattr(self.parent, 'get_proxy_for_session') else None
+            client = TelegramClient(str(session), config.API_ID, config.API_HASH, proxy=proxy_config)
+            
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    self.log(f"❌ {session.stem}: Session dead", "#ff0033")
+                    await client.disconnect()
+                    continue
+
+                try:
+
+                    from telethon.tl.functions.channels import JoinChannelRequest
+                    await client(JoinChannelRequest(channel_link))
+                    
+                    self.log(f"✅ Joined: {session.stem}", "#00ff41")
+                    success += 1
+                except Exception as e:
+                    err_msg = str(e)
+                    if "FLOOD_WAIT" in err_msg:
+                        self.log(f"⏳ {session.stem}: Flood wait", "#ff9900")
+                    else:
+                        self.log(f"❌ {session.stem}: {err_msg[:30]}", "#ff0033")
+                
+                await client.disconnect()
+                
+            except Exception as e:
+                self.log(f"⚠️ Connection error: {session.stem}", "#ff9900")
+            
+            await asyncio.sleep(random.uniform(2, 5))
+
+        self.log(f"🏁 DONE! Total new subscribers: {success}", "#ffffff")
         self.stop_boost()
 
 class SettingsDialog(QDialog):
@@ -1794,6 +1899,601 @@ class ScannerPanel(QWidget):
             self.res_table.setItem(r, 1, QTableWidgetItem(str(row['user_id'])))
             self.res_table.setItem(r, 2, QTableWidgetItem(str(row['text'])))
 
+class GlobalInbox(QWidget):
+    new_message_received = pyqtSignal(str, str, str, str) # time, account, sender, text
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.listening_clients = []
+        self.setup_ui()
+        self.new_message_received.connect(self.add_row)
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        header = QLabel("📨 GLOBAL INBOX (ВХОДЯЩИЕ И ИСХОДЯЩИЕ)")
+        header.setStyleSheet("color: #00ff9d; font-weight: bold; font-size: 14px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+
+        btn_layout = QHBoxLayout()
+        
+        self.btn_refresh = QPushButton("$ START / REFRESH")
+        self.btn_refresh.clicked.connect(self.on_refresh_click)
+        self.btn_refresh.setStyleSheet("""
+            QPushButton {
+                color: #00ff41; 
+                border: 1px solid #00ff41; 
+                padding: 10px; 
+                font-weight: bold;
+                background-color: #000;
+            }
+            QPushButton:hover { background-color: #111; }
+        """)
+        
+        self.status_label = QLabel("STATUS: OFFLINE")
+        self.status_label.setStyleSheet("color: #666; font-family: 'Consolas'; margin-left: 10px;")
+
+        btn_layout.addWidget(self.btn_refresh)
+        btn_layout.addWidget(self.status_label)
+        layout.addLayout(btn_layout)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["ВРЕМЯ", "АККАУНТ", "КТО ПИШЕТ", "СООБЩЕНИЕ"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #000; gridline-color: #333;
+                color: #00ff41; font-family: 'Consolas'; font-size: 11px;
+            }
+            QHeaderView::section {
+                background-color: #111; color: #fff;
+                border: 1px solid #333; padding: 4px;
+            }
+        """)
+        layout.addWidget(self.table)
+        
+        self.btn_clear = QPushButton("$ CLEAR_LIST")
+        self.btn_clear.clicked.connect(lambda: self.table.setRowCount(0))
+        self.btn_clear.setStyleSheet("color: #666; border: 1px solid #333; padding: 5px;")
+        layout.addWidget(self.btn_clear)
+
+        self.setLayout(layout)
+
+    def on_refresh_click(self):
+        self.btn_refresh.setEnabled(False)
+        self.btn_refresh.setText("CONNECTING...")
+        self.status_label.setText("STATUS: REFRESHING CONNECTIONS...")
+        self.status_label.setStyleSheet("color: #ff9900;")
+        asyncio.create_task(self.restart_listeners())
+
+    async def restart_listeners(self):
+        await self.stop_listeners()
+        
+        session_files = list(SESSIONS_DIR.glob("*.session"))
+        if not session_files:
+            self.status_label.setText("ERROR: NO SESSIONS")
+            self.reset_button()
+            return
+
+        connected = 0
+        
+        for file in session_files:
+            if 'journal' in file.name or '-wal' in file.name: continue
+            
+            try:
+                proxy = None
+                if hasattr(self.parent, 'get_proxy_for_session'):
+                    proxy = self.parent.get_proxy_for_session(file.stem)
+
+                client = TelegramClient(str(file), config.API_ID, config.API_HASH, proxy=proxy)
+                await client.connect()
+                
+                if await client.is_user_authorized():
+                    me = await client.get_me()
+                    my_name = f"@{me.username}" if me.username else f"+{me.phone}"
+                    
+                    client.add_event_handler(
+                        lambda e, name=my_name: self.handle_new_message(e, name),
+                        events.NewMessage() 
+                    )
+                    
+                    self.listening_clients.append(client)
+                    connected += 1
+                else:
+                    await client.disconnect()
+            except Exception as e:
+                print(f"Connection error: {e}")
+
+        self.status_label.setText(f"STATUS: ONLINE | MONITORING {connected} SESSIONS")
+        self.status_label.setStyleSheet("color: #00ff41;")
+        self.reset_button()
+
+    def reset_button(self):
+        self.btn_refresh.setText("$ REFRESH / CONNECT")
+        self.btn_refresh.setEnabled(True)
+
+    async def stop_listeners(self):
+        for client in self.listening_clients:
+            try: await client.disconnect()
+            except: pass
+        self.listening_clients.clear()
+
+    async def handle_new_message(self, event, account_name):
+        try:
+            text = event.message.message
+            if not text: text = "<MEDIA/FILE>"
+
+            sender = await event.get_sender()
+            sender_name = "Unknown"
+            
+            if sender:
+                fname = sender.first_name or ""
+                lname = sender.last_name or ""
+                uname = f" (@{sender.username})" if getattr(sender, 'username', None) else ""
+                sender_name = f"{fname} {lname}{uname}".strip()
+
+            if event.out:
+                sender_name = f"➡️ ME -> {sender_name}"
+            else:
+                sender_name = f"⬅️ {sender_name}"
+
+            if event.is_group:
+                chat = await event.get_chat()
+                sender_name = f"[GROUP: {chat.title}] {sender_name}"
+
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.new_message_received.emit(timestamp, account_name, sender_name, text)
+            
+        except Exception as e:
+            print(f"Handler Error: {e}")
+
+    def add_row(self, timestamp, account, sender, text):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(timestamp))
+        self.table.setItem(row, 1, QTableWidgetItem(account))
+        self.table.setItem(row, 2, QTableWidgetItem(sender))
+        self.table.setItem(row, 3, QTableWidgetItem(text))
+        self.table.scrollToBottom()
+
+
+class TrustVpnPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.is_running = False
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        header = QLabel("🔐 TRUST VPN AUTO-CONFIG")
+        header.setStyleSheet("color: #00ff9d; font-weight: bold; font-size: 14px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+
+        control_frame = QFrame()
+        control_frame.setStyleSheet("border: 1px solid #333; padding: 10px; background: #0a0a0a;")
+        control_layout = QGridLayout()
+
+        control_layout.addWidget(QLabel("SELECT SESSION:"), 0, 0)
+        
+        self.session_combo = QComboBox()
+        self.session_combo.setStyleSheet("background: #111; color: #00ff41; padding: 5px; border: 1px solid #00ff41;")
+        self.refresh_sessions()
+        control_layout.addWidget(self.session_combo, 0, 1)
+
+        self.btn_refresh = QPushButton("↻")
+        self.btn_refresh.setFixedWidth(30)
+        self.btn_refresh.clicked.connect(self.refresh_sessions)
+        control_layout.addWidget(self.btn_refresh, 0, 2)
+
+        control_frame.setLayout(control_layout)
+        layout.addWidget(control_frame)
+
+        btn_layout = QHBoxLayout()
+        self.btn_start = QPushButton("$ GET_VPN_KEY")
+        self.btn_start.clicked.connect(self.start_process)
+        self.btn_start.setStyleSheet("color: #000; background-color: #00ff41; border: 1px solid #00ff41; padding: 10px; font-weight: bold;")
+        
+        self.btn_stop = QPushButton("$ STOP")
+        self.btn_stop.clicked.connect(self.stop_process)
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setStyleSheet("color: #ff0033; border: 1px solid #ff0033; padding: 10px;")
+
+        btn_layout.addWidget(self.btn_start)
+        btn_layout.addWidget(self.btn_stop)
+        layout.addLayout(btn_layout)
+
+        layout.addWidget(QLabel("EXTRACTED KEY:"))
+        self.key_display = QLineEdit()
+        self.key_display.setPlaceholderText("Waiting for key...")
+        self.key_display.setStyleSheet("font-size: 14px; padding: 10px; color: #00ff9d; border: 1px solid #0099ff;")
+        layout.addWidget(self.key_display)
+
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setStyleSheet("background: #000; color: #666; font-family: monospace; font-size: 10px; border: 1px solid #333;")
+        layout.addWidget(self.log_area)
+
+        self.setLayout(layout)
+
+    def refresh_sessions(self):
+        self.session_combo.clear()
+        if SESSIONS_DIR.exists():
+            for file in SESSIONS_DIR.glob("*.session"):
+                if 'journal' not in file.name:
+                    self.session_combo.addItem(file.stem)
+
+    def log(self, text, color="#00ff41"):
+        time_str = datetime.now().strftime("%H:%M:%S")
+        self.log_area.append(f'<span style="color: #666;">[{time_str}]</span> <span style="color: {color};">{text}</span>')
+        scrollbar = self.log_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def start_process(self):
+        session_name = self.session_combo.currentText()
+        if not session_name:
+            self.log("ERROR: No session selected", "#ff0033")
+            return
+
+        self.is_running = True
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.key_display.clear()
+        self.log(f"🚀 Starting TrustVPN sequence for {session_name}...", "#0099ff")
+        
+        asyncio.create_task(self.run_automation(session_name))
+
+    def stop_process(self):
+        self.is_running = False
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.log("🛑 Process stopped", "#ff9900")
+
+    async def run_automation(self, session_name):
+        client = None
+        try:
+            session_path = SESSIONS_DIR / f"{session_name}.session"
+            proxy = self.parent.get_proxy_for_session(session_name) if hasattr(self.parent, 'get_proxy_for_session') else None
+            
+            client = TelegramClient(str(session_path), config.API_ID, config.API_HASH, proxy=proxy)
+            await client.connect()
+            
+            if not await client.is_user_authorized():
+                self.log("❌ Session is not authorized!", "#ff0033")
+                self.stop_process()
+                return
+
+            bot_username = "@trustvpn_official_bot"
+
+            self.log("1️⃣ Checking subscription...", "#ffff00")
+            try:
+                await client(JoinChannelRequest("trust_vpn_official"))
+            except: pass
+            await asyncio.sleep(0.5)
+
+            self.log("2️⃣ Sending /start...", "#ffff00")
+            await client.send_message(bot_username, "/start")
+            await asyncio.sleep(2)
+
+            self.log("3️⃣ Clicking 'Free Test'...", "#ffff00")
+            messages = await client.get_messages(bot_username, limit=1)
+            msg = messages[0]
+            
+            test_clicked = False
+            if msg.buttons:
+                for row in msg.buttons:
+                    for btn in row:
+                        if "бесплатный тест" in btn.text.lower() or "free test" in btn.text.lower():
+                            await btn.click()
+                            test_clicked = True
+                            self.log("✅ Clicked 'Free VPN Test'", "#00ff41")
+                            break
+                    if test_clicked: break
+            
+            await asyncio.sleep(2)
+
+            self.log("4️⃣ Sending /connect...", "#ffff00")
+            await client.send_message(bot_username, "/connect")
+            await asyncio.sleep(2)
+
+            self.log("5️⃣ Selecting Device...", "#ffff00")
+            
+            def find_device_btn(message):
+                if not message.buttons: return None
+                for row in message.buttons:
+                    for btn in row:
+                        txt = btn.text.lower()
+                        if ("устройство" in txt or "№" in txt) and "добавить" not in txt:
+                            return btn
+                return None
+
+            messages = await client.get_messages(bot_username, limit=1)
+            target_btn = find_device_btn(messages[0])
+
+            if not target_btn:
+                self.log("⚠️ Device not found. Creating new...", "#ff9900")
+                added = False
+                if messages[0].buttons:
+                    for row in messages[0].buttons:
+                        for btn in row:
+                            if "добавить" in btn.text.lower():
+                                await btn.click()
+                                self.log("✅ Clicked 'Add Device'", "#00ff41")
+                                added = True
+                                break
+                        if added: break
+                
+                if added:
+                    await asyncio.sleep(2) 
+                    self.log("🔄 Refreshing menu (/connect)...", "#0099ff")
+                    await client.send_message(bot_username, "/connect")
+                    await asyncio.sleep(2)
+                    messages = await client.get_messages(bot_username, limit=1)
+                    target_btn = find_device_btn(messages[0])
+
+            if target_btn:
+                self.log(f"✅ Selecting: {target_btn.text}", "#00ff41")
+                await target_btn.click()
+            else:
+                self.log("❌ ERROR: Failed to select device.", "#ff0033")
+                raise Exception("Device selection failed")
+
+            await asyncio.sleep(3)
+
+            self.log("6️⃣ Extracting Key (Advanced Mode)...", "#ffff00")
+            messages = await client.get_messages(bot_username, limit=1)
+            msg = messages[0]
+            
+            key_found = False
+            if "vless://" in msg.text or "vmess://" in msg.text:
+                self.log("✅ Found key in message text!", "#00ff41")
+                self.finish_success(msg.text)
+                key_found = True
+
+
+            if not key_found and msg.buttons:
+                for row in msg.buttons:
+                    for btn in row:
+
+                        if hasattr(btn.button, 'copy_text') and btn.button.copy_text:
+                            self.log("💎 Found NATIVE COPY button!", "#00ffff")
+                            self.finish_success(btn.button.copy_text)
+                            key_found = True
+                            break
+
+                        if hasattr(btn, 'url') and btn.url:
+                            if "vless://" in btn.url or "vmess://" in btn.url:
+                                self.log("✅ Found key in URL button", "#00ff41")
+                                self.finish_success(btn.url)
+                                key_found = True
+                                break
+
+                        if "скопировать" in btn.text.lower() or "copy" in btn.text.lower():
+                            self.log(f"🖱️ Clicking callback button: {btn.text}...", "#ffff00")
+                            result = await btn.click()
+                            
+                            if result and hasattr(result, 'message'):
+                                alert_text = result.message
+                                self.log(f"📩 Alert received: {alert_text[:50]}...", "#666") 
+                                
+                                if "vless://" in alert_text or "vmess://" in alert_text or "ss://" in alert_text:
+                                    self.finish_success(alert_text)
+                                    key_found = True
+                            else:
+                                self.log("⚠️ Button clicked, but no alert text returned.", "#666")
+                            break
+                    if key_found: break
+
+            if not key_found:
+                self.log("⏳ Checking for new messages...", "#ffff00")
+                await asyncio.sleep(3)
+                new_msgs = await client.get_messages(bot_username, limit=1)
+                if new_msgs[0].id != msg.id: 
+                    text = new_msgs[0].text
+                    if "vless://" in text or "vmess://" in text:
+                        self.finish_success(text)
+                        key_found = True
+
+            if not key_found:
+                self.log("❌ CRITICAL: Key not found anywhere.", "#ff0033")
+                if msg.buttons:
+                    self.log("Debug: Buttons present but parsing failed.", "#666")
+
+        except Exception as e:
+            self.log(f"💥 ERROR: {e}", "#ff0033")
+        finally:
+            if client: await client.disconnect()
+            self.stop_process()
+
+    def finish_success(self, key):
+        clean_key = key
+        if "clipboard" in key.lower() or "скопирован" in key.lower():
+             import re
+             match = re.search(r'(vless://\S+|vmess://\S+|ss://\S+)', key)
+             if match:
+                 clean_key = match.group(1)
+
+        self.key_display.setText(clean_key)
+        self.log(f"🏆 SUCCESS! Key extracted.", "#00ff41")
+        if hasattr(self.parent, 'history_panel'):
+            self.parent.history_panel.add_record("VPN KEY", "TrustVPN", f"Key len: {len(clean_key)}")
+
+
+class CodeGrabberPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.client = None
+        self.is_listening = False
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        header = QLabel("🔐 TELEGRAM LOGIN CODES (OTP)")
+        header.setStyleSheet("color: #00ff9d; font-weight: bold; font-size: 14px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+
+        control_frame = QFrame()
+        control_frame.setStyleSheet("border: 1px solid #333; padding: 10px; background: #0a0a0a;")
+        control_layout = QGridLayout()
+
+        control_layout.addWidget(QLabel("SELECT SESSION:"), 0, 0)
+        
+        self.session_combo = QComboBox()
+        self.session_combo.setStyleSheet("background: #111; color: #00ff41; padding: 5px; border: 1px solid #00ff41;")
+        self.refresh_sessions()
+        control_layout.addWidget(self.session_combo, 0, 1)
+
+        self.btn_refresh = QPushButton("↻")
+        self.btn_refresh.setFixedWidth(30)
+        self.btn_refresh.clicked.connect(self.refresh_sessions)
+        control_layout.addWidget(self.btn_refresh, 0, 2)
+
+        control_frame.setLayout(control_layout)
+        layout.addWidget(control_frame)
+
+        btn_layout = QHBoxLayout()
+        self.btn_start = QPushButton("$ START LISTENING")
+        self.btn_start.clicked.connect(self.start_listening)
+        self.btn_start.setStyleSheet("color: #000; background-color: #00ff41; border: 1px solid #00ff41; padding: 10px; font-weight: bold;")
+        
+        self.btn_stop = QPushButton("$ STOP")
+        self.btn_stop.clicked.connect(self.stop_listening)
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setStyleSheet("color: #ff0033; border: 1px solid #ff0033; padding: 10px;")
+
+        btn_layout.addWidget(self.btn_start)
+        btn_layout.addWidget(self.btn_stop)
+        layout.addLayout(btn_layout)
+
+        layout.addWidget(QLabel("DETECTED CODE:"))
+        self.code_display = QLineEdit()
+        self.code_display.setPlaceholderText("---")
+        self.code_display.setAlignment(Qt.AlignCenter)
+        self.code_display.setReadOnly(True)
+
+        self.code_display.setStyleSheet("""
+            QLineEdit {
+                font-size: 40px; 
+                padding: 10px; 
+                color: #00ff9d; 
+                border: 2px solid #0099ff; 
+                background-color: #000;
+                font-family: 'Consolas';
+                font-weight: bold;
+            }
+        """)
+        layout.addWidget(self.code_display)
+
+        layout.addWidget(QLabel("FULL MESSAGE CONTENT:"))
+        self.msg_preview = QTextEdit()
+        self.msg_preview.setReadOnly(True)
+        self.msg_preview.setMaximumHeight(100)
+        self.msg_preview.setStyleSheet("background: #111; color: #aaa; font-family: monospace; font-size: 11px; border: 1px solid #333;")
+        layout.addWidget(self.msg_preview)
+
+        self.status_label = QLabel("STATUS: IDLE")
+        self.status_label.setStyleSheet("color: #666;")
+        layout.addWidget(self.status_label)
+
+        self.setLayout(layout)
+
+    def refresh_sessions(self):
+        self.session_combo.clear()
+        if SESSIONS_DIR.exists():
+            for file in SESSIONS_DIR.glob("*.session"):
+                if 'journal' not in file.name:
+                    self.session_combo.addItem(file.stem)
+
+    def start_listening(self):
+        session_name = self.session_combo.currentText()
+        if not session_name: return
+
+        self.is_listening = True
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.code_display.clear()
+        self.msg_preview.clear()
+        self.status_label.setText(f"STATUS: CONNECTING TO {session_name}...")
+        self.status_label.setStyleSheet("color: #ff9900;")
+        
+        asyncio.create_task(self.run_listener(session_name))
+
+    def stop_listening(self):
+        self.is_listening = False
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.status_label.setText("STATUS: STOPPED")
+        self.status_label.setStyleSheet("color: #ff0033;")
+
+    async def run_listener(self, session_name):
+        try:
+            session_path = SESSIONS_DIR / f"{session_name}.session"
+            proxy = self.parent.get_proxy_for_session(session_name) if hasattr(self.parent, 'get_proxy_for_session') else None
+            
+            self.client = TelegramClient(str(session_path), config.API_ID, config.API_HASH, proxy=proxy)
+            await self.client.connect()
+            
+            if not await self.client.is_user_authorized():
+                self.status_label.setText("ERROR: NOT AUTHORIZED")
+                self.stop_listening()
+                return
+
+            self.status_label.setText("STATUS: LISTENING FOR CODES (777000)...")
+            self.status_label.setStyleSheet("color: #00ff41;")
+
+            try:
+
+                history = await self.client.get_messages(777000, limit=1)
+                if history:
+                    self.process_message(history[0])
+            except:
+                pass
+
+            @self.client.on(events.NewMessage(from_users=[777000, 42777])) 
+            async def handler(event):
+                if not self.is_listening: return
+                self.process_message(event.message)
+
+            while self.is_listening:
+                await asyncio.sleep(1)
+            
+        except Exception as e:
+            self.status_label.setText(f"ERROR: {str(e)[:30]}")
+        finally:
+            if self.client: await self.client.disconnect()
+
+    def process_message(self, message):
+        text = message.text
+        self.msg_preview.setText(text)
+
+        import re
+
+        match = re.search(r'\b(\d{5})\b', text)
+        
+        if match:
+            code = match.group(1)
+            self.code_display.setText(code)
+            self.status_label.setText(f"✅ CODE RECEIVED AT {datetime.now().strftime('%H:%M:%S')}")
+
+        else:
+            self.status_label.setText("⚠️ MESSAGE RECEIVED (NO CODE FOUND)")
+
+
 class CyberMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1891,11 +2591,21 @@ class CyberMainWindow(QMainWindow):
         self.view_booster = ViewBooster(self)
         self.tabs.addTab(self.view_booster, TR("tab_view"))
         
+        self.subs_booster = SubscriberBooster(self)
+        self.tabs.addTab(self.subs_booster, "SUBS BOOSTER")
         
         self.stats_dashboard = StatsDashboard(self)
         self.tabs.addTab(self.stats_dashboard, TR("tab_dash"))
         
-      
+        self.inbox_panel = GlobalInbox(self)
+        self.tabs.addTab(self.inbox_panel, "INBOX") 
+
+        self.trust_vpn_panel = TrustVpnPanel(self)
+        self.tabs.addTab(self.trust_vpn_panel, "Trust VPN") 
+
+        self.code_panel = CodeGrabberPanel(self)
+        self.tabs.addTab(self.code_panel, "🔑 OTP CODES") 
+
         self.history_panel = HistoryPanel(self)
         self.tabs.addTab(self.history_panel, "HISTORY") 
         
