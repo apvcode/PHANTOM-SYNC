@@ -8,7 +8,7 @@
 ---
 
 ## 🖥️ Interface
-![Dashboard Preview](https://i.postimg.cc/SRk7Bp7Y/2026-01-19-023604-hyprshot.png)
+![Dashboard Preview](https://i.postimg.cc/RZJQygVC/image.png)
 
 ## 🔥 Key Features
 
@@ -83,7 +83,7 @@ This tool is developed for **educational purposes and internal marketing testing
 ---
 
 ## 🖥️ Интерфейс
-![Dashboard Preview](https://i.postimg.cc/SRk7Bp7Y/2026-01-19-023604-hyprshot.png)
+![Dashboard Preview](https://i.postimg.cc/RZJQygVC/image.png)
 
 ## 🔥 Ключевые возможности
 
